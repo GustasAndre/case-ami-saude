@@ -414,3 +414,168 @@ def boxplot_iqr_todas_colunas(
     )
     fig.tight_layout()
     plt.show()
+
+def validacao_cid(
+        df: pd.DataFrame,
+        cid_principal_col: str = 'cid_principal',
+        cid_secundario_col: str = "cid_secundario",
+        especialidade_col: str = "especialidade_responsavel",
+        internacao_tipo_col: str = "tipo_internacao",
+        internacao_carater_col: str = "carater_internacao"
+):
+    df_cid = pd.read_csv(r'C:\Projetos\case-ami-saude\data\raw\CID-10-CATEGORIAS.CSV',sep=';', encoding='latin1')
+    mapa_especialidade_cid = {
+    "Clínica Médica": (
+        "A","B","E","I","J","K","N","R"
+    ),
+    "Pediatria": (
+        "A","B","E","J","P","Q","R","Z"
+    ),
+    "Oncologia": (
+        "C","D"
+    ),
+    "Nefrologia": (
+        "N"
+    ),
+    "Ginecologia/Obstetrícia": (
+        "O","N"
+    ),
+    "Pneumologia": (
+        "J"
+    ),
+    "Cardiologia": (
+        "I"
+    ),
+    "Gastroenterologia": (
+        "K"
+    ),
+    "Ortopedia": (
+        "M","S","T"
+    ),
+    "Neurologia": (
+        "G","I"
+    ),
+    "Infectologia": (
+        "A","B"
+    ),
+}
+    # Verifica se o CID está no formato correto (uma letra maiúscula seguida de dois dígitos, opcionalmente seguido por um ponto e mais um dígito)
+    cid_pattern = re.compile(r"^[A-Z][0-9]{2}$")
+
+    df["cid_principal_formato_ok"] = df[cid_principal_col].str.match(cid_pattern)
+    df["cid_secundario_formato_ok"] = df[cid_secundario_col].str.match(cid_pattern)
+
+    #Verifica se o cid está presente na tabela de CID-10
+    cids_validos = set(df_cid['CAT'])
+
+    df["cid_principal_valido"] = df[cid_principal_col].isin(cids_validos)
+    df["cid_secundario_valido"] = (df[cid_secundario_col].isna() | df[cid_secundario_col].isin(cids_validos))
+
+    #Verifica se o CID pertence a especialidade médica responsável pela internação, usando o mapa de especialidade para letras iniciais do CID
+    df["cid_principal_compativel_especialidade"] = df.apply(
+    lambda x: cid_compativel_especialidade(
+        x[cid_principal_col],
+        x[especialidade_col],
+        mapa_especialidade_cid
+    ),
+    axis=1
+)
+
+    df["cid_secundario_compativel_especialidade"] = df.apply(
+        lambda x: cid_compativel_especialidade(
+            x[cid_secundario_col],
+            x[especialidade_col],
+            mapa_especialidade_cid
+        ),
+        axis=1
+    )
+
+    #flags inconsistencias de CID
+    cidp = df[cid_principal_col].astype("string").str.strip().str.upper()
+    cids = df[cid_secundario_col].astype("string").str.strip().str.upper()
+
+    tipo = df[internacao_tipo_col].astype("string").str.strip()
+    carater = df[internacao_carater_col].astype("string").str.strip()
+    esp = df[especialidade_col].astype("string").str.strip()
+    # Camada 1- 
+    """
+    Tipo de internação Obstétrica → CID principal deve ser capítulo O
+
+    Tipo de internação Psiquiátrica → CID principal deve ser capítulo F 
+    """
+
+    df["alerta_swap_obstetrica"] = (
+        (tipo == "Obstétrica")
+        & ~cidp.str.startswith("O", na=False)
+        & cids.str.startswith("O", na=False)
+    )
+    df["alerta_swap_psiquiatrica"] = (
+        (tipo == "Psiquiátrica")
+        & ~cidp.str.startswith("F", na=False)
+        & cids.str.startswith("F", na=False)
+    )
+
+    # Camada 2 - CID secundário mais compatível com a especialidade do que o CID principal
+
+    df["cidp_comp_esp"] = df.apply(
+        lambda x: cid_compativel_especialidade(x[cid_principal_col], x[especialidade_col], mapa_especialidade_cid),
+        axis=1
+    )
+
+    df["cids_comp_esp"] = df.apply(
+        lambda x: cid_compativel_especialidade(x[cid_secundario_col], x[especialidade_col], mapa_especialidade_cid),
+        axis=1
+    )
+
+    df["alerta_swap_especialidade"] = (~df["cidp_comp_esp"]) & (df["cids_comp_esp"])
+
+    # Camada 3 - CIDs genéricos (capítulos R e Z) não deveriam ser principais se houver um CID específico presente
+    """
+    CIDs dos capítulos R e Z são frequentemente usados como diagnóstico provisório.
+    Quando eles aparecem como principal e existe um CID secundário mais específico, isso é um padrão clássico de hierarquia invertida.
+    """
+    df["alerta_swap_generico"] = (
+        cidp.str.startswith(("R","Z"), na=False)
+        & cids.notna()
+        & ~cids.str.startswith(("R","Z"), na=False)
+    )
+
+    # Camada 4 - Para internações eletivas, se o CID principal for de Ortopedia (capítulos S ou T), mas houver um CID secundário compatível com a especialidade, pode ser um swap de CID
+    """
+    Eu não usei caráter como regra dura, mas como priorização.
+    Por exemplo, trauma como CID principal em internação eletiva é raro. Quando isso acontecia e o secundário era compatível com a especialidade, eu marcava como suspeito.
+    """
+
+    df["alerta_swap_carater"] = (
+        (carater == "Eletiva")
+        & cidp.str.startswith(("S","T"), na=False)
+        & df["cids_comp_esp"]  # secundário faz mais sentido pro setor
+    )
+
+    swap_cols = [
+    "alerta_swap_obstetrica",
+    "alerta_swap_psiquiatrica",
+    "alerta_swap_especialidade",
+    "alerta_swap_generico",
+    "alerta_swap_carater",
+]
+
+    df["alerta_swap"] = df[swap_cols].any(axis=1)
+    df["score_swap"] = df[swap_cols].sum(axis=1)
+
+    return df
+
+
+def trat_senha_internacao(
+        df: pd.DataFrame,
+        senha_col: str = "senha_internacao"
+        ):
+    """
+    Valida senha no formato:
+    SI + ANO (4 dígitos) + 7 números
+    Exemplo válido: SI20261234567
+    """
+    df[senha_col] = df[senha_col].astype(str).str.strip().str.upper()
+    padrao = r"^SI\d{4}\d{7}$"
+    df[f"{senha_col}_valida"] = df[senha_col].apply(lambda x: bool(re.match(padrao, x)))
+    return df
