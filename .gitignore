@@ -3,6 +3,12 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+#python
+*.pyc
+*.pyo
+*.pyd
+.ipynb_checkpoints/
+
 # C extensions
 *.so
 
@@ -143,6 +149,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+*.conda
 
 #data
 data/
@@ -212,3 +219,10 @@ __marimo__/
 # Docs:
 *.doc
 *.docx
+
+# Models
+*.joblib
+
+#OS
+.DS_Store
+Thumbs.db
