@@ -80,6 +80,9 @@ def main() -> None:
     nasc = pd.to_datetime(df_base_01["data_nascimento"], errors="coerce")
     idade_aprox = (adm - nasc).dt.days / 365.25
     df_base_01["idade"] = np.floor(pd.to_numeric(idade_aprox, errors="coerce")).astype("Int64")
+    df_base_01['idade'] = np.where(
+        df_base_01['idade'] < 0, 0, df_base_01['idade']
+        )
 
     # Tempo autorização (horas)
     delta = df_base_01["data_autorizacao_senha"] - df_base_01["data_solicitacao_autorizacao"]
